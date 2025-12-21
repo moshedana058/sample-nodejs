@@ -4,13 +4,14 @@ on:
   workflow_run:
     workflows: ["Release"]
     types: [completed]
+    branches: ["dev", "main"]
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: cd-${{ github.event.workflow_run.head_sha || github.sha }}
+  group: cd-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -18,47 +19,98 @@ jobs:
     if: >
       (github.event_name == 'workflow_dispatch') ||
       (github.event.workflow_run.conclusion == 'success')
-    runs-on: self-hosted
+    runs-on: [self-hosted]
+
+    env:
+      ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+      ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
 
     steps:
-      - name: Checkout
+      - name: Checkout (optional)
         uses: actions/checkout@v4
 
-      - name: Configure kubeconfig (optional via secret)
-        if: ${{ secrets.KUBE_CONFIG_B64 != '' }}
+      - name: Ensure argocd CLI exists
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p ~/.kube
-          echo "${{ secrets.KUBE_CONFIG_B64 }}" | base64 -d > ~/.kube/config
-          chmod 600 ~/.kube/config
-          kubectl version --client
-          kubectl get nodes
-
-      - name: Install argocd CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v argocd >/dev/null 2>&1; then
-            curl -sSL -o /usr/local/bin/argocd \
-              https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-            chmod +x /usr/local/bin/argocd
+          if command -v argocd >/dev/null 2>&1; then
+            argocd version --client
+            exit 0
           fi
+          sudo curl -sSL -o /usr/local/bin/argocd \
+            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          sudo chmod +x /usr/local/bin/argocd
           argocd version --client
 
-      - name: ArgoCD sync + wait
+      - name: Validate secrets
         shell: bash
-        env:
-          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
         run: |
           set -euo pipefail
-          argocd app sync sample-nodejs --server "$ARGOCD_SERVER" --auth-token "$ARGOCD_AUTH_TOKEN"
-          argocd app wait sample-nodejs --health --server "$ARGOCD_SERVER" --auth-token "$ARGOCD_AUTH_TOKEN" --timeout 300
+          [ -n "${ARGOCD_SERVER:-}" ] || (echo "Missing ARGOCD_SERVER secret" && exit 1)
+          [ -n "${ARGOCD_AUTH_TOKEN:-}" ] || (echo "Missing ARGOCD_AUTH_TOKEN secret" && exit 1)
 
-      - name: Verify objects
+      - name: Pick app name + revision
+        id: app
         shell: bash
         run: |
           set -euo pipefail
-          kubectl -n sample-nodejs get deploy,po,svc,ingress -o wide
+          BRANCH="${{ github.event.workflow_run.head_branch || github.ref_name }}"
+          if [ "$BRANCH" = "main" ]; then
+            echo "name=sample-nodejs" >> "$GITHUB_OUTPUT"
+            echo "rev=main" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=sample-nodejs-dev" >> "$GITHUB_OUTPUT"
+            echo "rev=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upsert ArgoCD application (Helm from this repo)
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="${{ steps.app.outputs.name }}"
+          REV="${{ steps.app.outputs.rev }}"
+          REPO="https://github.com/${{ github.repository }}.git"
+
+          # --grpc-web is usually required behind HTTP ingress
+          argocd app create "$APP" \
+            --server "$ARGOCD_SERVER" \
+            --auth-token "$ARGOCD_AUTH_TOKEN" \
+            --grpc-web \
+            --insecure \
+            --upsert \
+            --repo "$REPO" \
+            --revision "$REV" \
+            --path charts/sample-nodejs \
+            --dest-server https://kubernetes.default.svc \
+            --dest-namespace sample-nodejs \
+            --sync-policy automated \
+            --self-heal \
+            --auto-prune
+
+      - name: Sync + wait healthy
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="${{ steps.app.outputs.name }}"
+
+          argocd app sync "$APP" \
+            --server "$ARGOCD_SERVER" \
+            --auth-token "$ARGOCD_AUTH_TOKEN" \
+            --grpc-web \
+            --insecure
+
+          argocd app wait "$APP" \
+            --server "$ARGOCD_SERVER" \
+            --auth-token "$ARGOCD_AUTH_TOKEN" \
+            --grpc-web \
+            --insecure \
+            --health \
+            --operation \
+            --timeout 300
+
+          argocd app get "$APP" \
+            --server "$ARGOCD_SERVER" \
+            --auth-token "$ARGOCD_AUTH_TOKEN" \
+            --grpc-web \
+            --insecure
 
