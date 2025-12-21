@@ -11,19 +11,17 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.event.workflow_run.head_branch || github.ref }}
+  group: release-${{ github.event.workflow_run.head_branch || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   release:
-    # Run only if CI succeeded (or manual dispatch)
     if: >
       (github.event_name == 'workflow_dispatch') ||
       (
         github.event.workflow_run.conclusion == 'success' &&
         !startsWith(github.event.workflow_run.head_commit.message, 'chore(release):')
       )
-
     runs-on: ubuntu-latest
 
     steps:
@@ -33,7 +31,6 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # manual run: use current ref_name
             echo "branch=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
             echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
           else
@@ -41,26 +38,23 @@ jobs:
             echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout triggering branch (with push creds)
+      - name: Checkout triggering branch
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.ref.outputs.branch }}
           fetch-depth: 0
-          persist-credentials: true
 
-      - name: Ensure branch matches the CI-tested SHA
+      - name: Verify CI-tested SHA
         shell: bash
         run: |
           set -euo pipefail
           git fetch origin "${{ steps.ref.outputs.branch }}" --prune
           git fetch --tags --force
+
           HEAD_SHA="$(git rev-parse HEAD)"
           EXPECTED="${{ steps.ref.outputs.sha }}"
-          echo "Branch: ${{ steps.ref.outputs.branch }}"
-          echo "HEAD:   $HEAD_SHA"
-          echo "CI SHA: $EXPECTED"
           if [ "$HEAD_SHA" != "$EXPECTED" ]; then
-            echo "Branch moved after CI finished. Re-run CI on latest commit, then release will follow."
+            echo "Branch moved after CI. Run CI on latest commit; release will follow."
             exit 1
           fi
 
@@ -85,6 +79,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git fetch --tags --force
 
           LAST_TAG="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)"
           if [ -n "${LAST_TAG:-}" ]; then
@@ -101,11 +96,9 @@ jobs:
           if echo "$LOG" | grep -qiE '(^feat(\(|:))'; then
             echo "type=minor" >> "$GITHUB_OUTPUT"; exit 0
           fi
-
           echo "type=patch" >> "$GITHUB_OUTPUT"
 
-      - name: Compute next VERSION from tags (unique) + bump package/lock
-        id: version
+      - name: Compute next VERSION from remote tags (unique) + bump lockfile
         shell: bash
         run: |
           set -euo pipefail
@@ -136,19 +129,19 @@ jobs:
           if [ -n "${LT:-}" ]; then
             BASE="${LT#v}"
           else
-            BASE="$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")"
+            BASE="0.0.0"
           fi
 
           TYPE="${{ steps.bump.outputs.type }}"
           VERSION="$(bump_semver "$BASE" "$TYPE")"
 
           while git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null 2>&1 || remote_tag_exists "${VERSION}"; do
-            echo "Tag v${VERSION} exists -> bumping patch"
+            echo "Tag v${VERSION} already exists -> bumping patch"
             VERSION="$(bump_semver "$VERSION" patch)"
           done
 
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "Final VERSION=${VERSION}"
+          echo "Chosen VERSION=${VERSION}"
 
           npm version "${VERSION}" --no-git-tag-version
           rm -rf node_modules
@@ -161,7 +154,6 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -euo pipefail
-
           if [ -z "${DOCKERHUB_USERNAME:-}" ]; then
             echo "Missing secret: DOCKERHUB_USERNAME"
             exit 1
@@ -174,12 +166,6 @@ jobs:
           fi
 
           REPO="$(echo "$REPO" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-
-          if ! echo "$REPO" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$'; then
-            echo "Invalid Docker repository name: '$REPO'"
-            exit 1
-          fi
-
           echo "IMAGE_REPO=$REPO" >> "$GITHUB_ENV"
           echo "IMAGE_TAG=docker.io/$REPO:${VERSION}" >> "$GITHUB_ENV"
           echo "IMAGE_LATEST=docker.io/$REPO:latest" >> "$GITHUB_ENV"
@@ -200,8 +186,6 @@ jobs:
           load: true
           tags: ${{ env.IMAGE_TAG }}
           provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Trivy scan (fail on HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@0.28.0
@@ -221,17 +205,13 @@ jobs:
             ${{ env.IMAGE_TAG }}
             ${{ env.IMAGE_LATEST }}
           provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Update Helm chart versions + image repo/tag
         shell: bash
         run: |
           set -euo pipefail
-
           sed -i "s/^version: .*/version: ${VERSION}/" charts/sample-nodejs/Chart.yaml
           sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" charts/sample-nodejs/Chart.yaml
-
           sed -i "s|^\(\s*repository:\s*\).*|\1${IMAGE_REPO}|" charts/sample-nodejs/values.yaml
           sed -i "s|^\(\s*tag:\s*\).*|\1${VERSION}|" charts/sample-nodejs/values.yaml
 
@@ -239,7 +219,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -247,9 +226,6 @@ jobs:
           git commit -m "chore(release): v${VERSION}"
 
           git tag "v${VERSION}"
-
-          # Rebase in case branch advanced slightly (rare but avoids non-fast-forward)
-          git pull --rebase origin "${{ steps.ref.outputs.branch }}" || true
 
           git push origin "${{ steps.ref.outputs.branch }}" --tags
 
