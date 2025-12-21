@@ -69,7 +69,7 @@ jobs:
           argocd login "${ARGOCD_SERVER}" --insecure --grpc-web --auth-token "${ARGOCD_AUTH_TOKEN}"
           argocd account get-user-info
 
-      - name: Upsert Application (GitOps: ArgoCD pulls from this repo)
+      - name: Upsert Application (GitOps ArgoCD pulls from this repo)
         shell: bash
         run: |
           set -euo pipefail
