@@ -2,7 +2,7 @@ replicaCount: 2
 
 image:
   repository: moshedana/sample-nodejs
-  tag: 0.0.10
+  tag: dev-3045952
   pullPolicy: IfNotPresent
 
 app:
