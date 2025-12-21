@@ -1,13 +1,10 @@
 name: CD
 
 on:
-  
   workflow_run:
     workflows: ["Release"]
     types: [completed]
     branches: ["dev", "main"]
-
-  # Allow manual run
   workflow_dispatch: {}
 
 permissions:
@@ -58,29 +55,51 @@ jobs:
           sudo mv /tmp/argocd /usr/local/bin/argocd
           argocd version --client
 
-      - name: Login to ArgoCD (token)
+      - name: Validate ArgoCD secrets + connectivity (no secrets printed)
         shell: bash
         env:
-          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}       
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
         run: |
           set -euo pipefail
-          echo "Logging into ArgoCD server..."
-          argocd login "${ARGOCD_SERVER}" --insecure --grpc-web --auth-token "${ARGOCD_AUTH_TOKEN}"
-          argocd account get-user-info
+          [[ -n "${ARGOCD_SERVER:-}" ]] || { echo "ERROR: ARGOCD_SERVER secret is empty"; exit 1; }
+          [[ -n "${ARGOCD_AUTH_TOKEN:-}" ]] || { echo "ERROR: ARGOCD_AUTH_TOKEN secret is empty"; exit 1; }
 
-      - name: Upsert Application (GitOps ArgoCD pulls from this repo)
+          echo "Using ARGOCD_SERVER=${ARGOCD_SERVER}"
+          # If your ArgoCD is HTTP (no TLS), this should return 200 with HTML
+          curl -sS -m 3 -v "http://${ARGOCD_SERVER}/" >/dev/null
+
+      - name: ArgoCD auth check (stateless token)
         shell: bash
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          argocd --server "${ARGOCD_SERVER}" --grpc-web --plaintext \
+            --auth-token "${ARGOCD_AUTH_TOKEN}" account get-user-info
+
+      - name: Upsert Application (GitOps: ArgoCD pulls from this repo)
+        shell: bash
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           test -f argocd/application.yaml
-          argocd app create -f argocd/application.yaml --upsert
+          argocd --server "${ARGOCD_SERVER}" --grpc-web --plaintext \
+            --auth-token "${ARGOCD_AUTH_TOKEN}" app create -f argocd/application.yaml --upsert
 
       - name: Sync & wait healthy
         shell: bash
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           APP="sample-nodejs"
-          argocd app sync "${APP}" --prune --timeout 300
-          argocd app wait "${APP}" --health --timeout 300
+          argocd --server "${ARGOCD_SERVER}" --grpc-web --plaintext \
+            --auth-token "${ARGOCD_AUTH_TOKEN}" app sync "${APP}" --prune --timeout 300
+          argocd --server "${ARGOCD_SERVER}" --grpc-web --plaintext \
+            --auth-token "${ARGOCD_AUTH_TOKEN}" app wait "${APP}" --health --timeout 300
 
