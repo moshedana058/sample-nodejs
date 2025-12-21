@@ -1,0 +1,64 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: >
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event.workflow_run.conclusion == 'success')
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure kubeconfig (optional via secret)
+        if: ${{ secrets.KUBE_CONFIG_B64 != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG_B64 }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl version --client
+          kubectl get nodes
+
+      - name: Install argocd CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v argocd >/dev/null 2>&1; then
+            curl -sSL -o /usr/local/bin/argocd \
+              https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+            chmod +x /usr/local/bin/argocd
+          fi
+          argocd version --client
+
+      - name: ArgoCD sync + wait
+        shell: bash
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          argocd app sync sample-nodejs --server "$ARGOCD_SERVER" --auth-token "$ARGOCD_AUTH_TOKEN"
+          argocd app wait sample-nodejs --health --server "$ARGOCD_SERVER" --auth-token "$ARGOCD_AUTH_TOKEN" --timeout 300
+
+      - name: Verify objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl -n sample-nodejs get deploy,po,svc,ingress -o wide
+
