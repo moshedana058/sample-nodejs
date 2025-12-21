@@ -1,42 +1,35 @@
 name: CD
-
 on:
-  
   workflow_run:
     workflows: ["Release"]
     types: [completed]
     branches: ["dev", "main"]
-
   # Allow manual run
   workflow_dispatch: {}
-
 permissions:
   contents: read
-
 concurrency:
   group: cd-${{ github.event.workflow_run.head_branch || github.ref_name }}
   cancel-in-progress: true
-
 jobs:
   deploy:
     name: Deploy via ArgoCD
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: self-hosted
-
     steps:
       - name: Checkout branch tip (includes release commit)
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_branch || github.ref_name }}
           fetch-depth: 0
-
+      
       - name: Kube sanity
         shell: bash
         run: |
           set -euo pipefail
           kubectl version --client
           kubectl get nodes
-
+      
       - name: Install ArgoCD CLI (if missing)
         shell: bash
         run: |
@@ -45,41 +38,42 @@ jobs:
             argocd version --client
             exit 0
           fi
-
           ARCH="$(uname -m)"
           case "$ARCH" in
             x86_64) ARCH=amd64 ;;
             aarch64|arm64) ARCH=arm64 ;;
             *) echo "Unsupported arch: $ARCH" ; exit 1 ;;
           esac
-
           curl -sSL -o /tmp/argocd "https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-${ARCH}"
           chmod +x /tmp/argocd
           sudo mv /tmp/argocd /usr/local/bin/argocd
           argocd version --client
-
-      - name: Login to ArgoCD (token)
+      
+      - name: Configure ArgoCD credentials
         shell: bash
         env:
           ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
         run: |
           set -euo pipefail
-          echo "Logging into ArgoCD server..."
-          argocd login "${ARGOCD_SERVER}" \
-            --auth-token "${ARGOCD_AUTH_TOKEN}" \
-            --grpc-web \
-            --insecure \
-            --plaintext
-          argocd account get-user-info
-
+          echo "Configuring ArgoCD connection..."
+          
+          # Export credentials as environment variables for all subsequent steps
+          echo "ARGOCD_SERVER=${ARGOCD_SERVER}" >> $GITHUB_ENV
+          echo "ARGOCD_AUTH_TOKEN=${ARGOCD_AUTH_TOKEN}" >> $GITHUB_ENV
+          echo "ARGOCD_OPTS=--grpc-web --insecure" >> $GITHUB_ENV
+          
+          # Test connection
+          echo "Testing ArgoCD connection..."
+          argocd account get-user-info --grpc-web --insecure --server "${ARGOCD_SERVER}" --auth-token "${ARGOCD_AUTH_TOKEN}"
+      
       - name: Upsert Application (GitOps ArgoCD pulls from this repo)
         shell: bash
         run: |
           set -euo pipefail
           test -f argocd/application.yaml
           argocd app create -f argocd/application.yaml --upsert
-
+      
       - name: Sync & wait healthy
         shell: bash
         run: |
@@ -87,4 +81,3 @@ jobs:
           APP="sample-nodejs"
           argocd app sync "${APP}" --prune --timeout 300
           argocd app wait "${APP}" --health --timeout 300
-
