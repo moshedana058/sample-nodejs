@@ -4,7 +4,7 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
-    branches: ["dev"]
+    branches: ["dev", "main"]
   workflow_dispatch: {}
 
 permissions:
@@ -16,25 +16,25 @@ concurrency:
 
 jobs:
   release:
+    # Run only if CI succeeded (or manual dispatch)
     if: >
       (github.event_name == 'workflow_dispatch') ||
       (
         github.event.workflow_run.conclusion == 'success' &&
         !startsWith(github.event.workflow_run.head_commit.message, 'chore(release):')
       )
+
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout the exact commit CI validated (detached is OK for now)
+      - name: Checkout the exact commit that CI validated
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
 
-      - name: Fetch tags (needed to detect existing versions)
-        run: |
-          git fetch --tags --force
-          git tag -l | tail -n +1 >/dev/null
+      - name: Ensure we have all tags
+        run: git fetch --tags --force
 
       - uses: actions/setup-node@v4
         with:
@@ -62,9 +62,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+
+          LAST_TAG="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)"
           if [ -n "${LAST_TAG:-}" ]; then
-            RANGE="$LAST_TAG..HEAD"
+            RANGE="${LAST_TAG}..HEAD"
           else
             RANGE="HEAD"
           fi
@@ -77,37 +78,58 @@ jobs:
           if echo "$LOG" | grep -qiE '(^feat(\(|:))'; then
             echo "type=minor" >> "$GITHUB_OUTPUT"; exit 0
           fi
+
           echo "type=patch" >> "$GITHUB_OUTPUT"
 
-      - name: Bump npm version + lockfile (ensure tag is unique locally+remote)
+      - name: Compute next VERSION from tags (unique) + set package.json/lock
         id: version
         shell: bash
         run: |
           set -euo pipefail
+          git fetch --tags --force
 
-          bump_once () {
-            npm version "$1" --no-git-tag-version
-            rm -rf node_modules
-            npm install --package-lock-only
+          latest_tag() {
+            git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true
           }
 
-          bump_once "${{ steps.bump.outputs.type }}"
-          VERSION="$(node -p "require('./package.json').version")"
+          bump_semver() {
+            ver="$1"; t="$2"
+            IFS='.' read -r a b c <<< "$ver"
+            a="${a:-0}"; b="${b:-0}"; c="${c:-0}"
+            case "$t" in
+              major) a=$((a+1)); b=0; c=0 ;;
+              minor) b=$((b+1)); c=0 ;;
+              patch) c=$((c+1)) ;;
+              *) echo "Unknown bump type: $t" >&2; exit 1 ;;
+            esac
+            echo "${a}.${b}.${c}"
+          }
 
-          # function to check whether tag exists on remote
-          remote_tag_exists () {
+          remote_tag_exists() {
             git ls-remote --tags origin "refs/tags/v$1" | grep -q .
           }
 
-          # If vVERSION exists (local or remote), bump patch until free
+          LT="$(latest_tag)"
+          if [ -n "${LT:-}" ]; then
+            BASE="${LT#v}"
+          else
+            BASE="$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")"
+          fi
+
+          TYPE="${{ steps.bump.outputs.type }}"
+          VERSION="$(bump_semver "$BASE" "$TYPE")"
+
           while git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null 2>&1 || remote_tag_exists "${VERSION}"; do
-            echo "Tag v${VERSION} already exists (local or remote) -> bumping patch"
-            bump_once patch
-            VERSION="$(node -p "require('./package.json').version")"
+            echo "Tag v${VERSION} exists -> bumping patch"
+            VERSION="$(bump_semver "$VERSION" patch)"
           done
 
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "Final VERSION=${VERSION}"
+
+          npm version "${VERSION}" --no-git-tag-version
+          rm -rf node_modules
+          npm install --package-lock-only
 
       - name: Compute Docker image repo
         shell: bash
@@ -116,12 +138,20 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -euo pipefail
+
           if [ -n "${DOCKERHUB_REPO:-}" ]; then
             REPO="${DOCKERHUB_REPO}"
           else
             REPO="${DOCKERHUB_USERNAME}/sample-nodejs"
           fi
+
           REPO="$(echo "$REPO" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+
+          if ! echo "$REPO" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$'; then
+            echo "Invalid Docker repository name: '$REPO'"
+            exit 1
+          fi
+
           echo "IMAGE_REPO=$REPO" >> "$GITHUB_ENV"
           echo "IMAGE_TAG=$REPO:${VERSION}" >> "$GITHUB_ENV"
           echo "IMAGE_LATEST=$REPO:latest" >> "$GITHUB_ENV"
@@ -160,8 +190,8 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ env.IMAGE_TAG }}
-            ${{ env.IMAGE_LATEST }}
+            docker.io/${{ env.IMAGE_TAG }}
+            docker.io/${{ env.IMAGE_LATEST }}
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -170,18 +200,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           sed -i "s/^version: .*/version: ${VERSION}/" charts/sample-nodejs/Chart.yaml
           sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" charts/sample-nodejs/Chart.yaml
+
           sed -i "s|^\(\s*repository:\s*\).*|\1${IMAGE_REPO}|" charts/sample-nodejs/values.yaml
           sed -i "s|^\(\s*tag:\s*\).*|\1${VERSION}|" charts/sample-nodejs/values.yaml
 
-      - name: Commit, tag, push (attach to dev so not detached)
+      - name: Commit, tag, push (back to the branch that triggered CI)
         shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
 
-          # Attach the checked-out SHA to dev branch name (avoids detached HEAD commits)
-          git checkout -B dev
+          # For workflow_dispatch fallback, default to current branch
+          if [ -z "${TARGET_BRANCH:-}" ]; then
+            TARGET_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+          fi
+
+          git checkout -B "$TARGET_BRANCH"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -189,8 +227,6 @@ jobs:
           git add package.json package-lock.json charts/sample-nodejs/Chart.yaml charts/sample-nodejs/values.yaml
           git commit -m "chore(release): v${VERSION}"
 
-          # Unique tag guaranteed by earlier step
           git tag "v${VERSION}"
-
-          git push origin dev --tags
+          git push origin "$TARGET_BRANCH" --tags
 
