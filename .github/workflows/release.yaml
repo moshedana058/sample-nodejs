@@ -1,18 +1,14 @@
 name: Release
 
 on:
-  
   workflow_run:
     workflows: ["CI"]
     types: [completed]
     branches: ["dev"]
-
-  
   workflow_dispatch: {}
 
 permissions:
   contents: write
-  security-events: write
 
 concurrency:
   group: release-${{ github.event.workflow_run.head_branch || github.ref }}
@@ -20,7 +16,6 @@ concurrency:
 
 jobs:
   release:
-    
     if: >
       (github.event_name == 'workflow_dispatch') ||
       (
@@ -31,14 +26,13 @@ jobs:
 
     steps:
       - name: Checkout the exact commit that CI validated
-      
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
 
       - name: Fetch tags
-        run: git fetch --force --tags
+        run: git fetch --tags --force
 
       - uses: actions/setup-node@v4
         with:
@@ -79,45 +73,51 @@ jobs:
             echo "type=major" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
           if echo "$LOG" | grep -qiE '(^feat(\(|:))'; then
             echo "type=minor" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
           echo "type=patch" >> "$GITHUB_OUTPUT"
 
-      - name: Bump npm version + refresh lockfile
+      - name: Bump npm version + lockfile (ensure unique git tag)
+        id: version
         shell: bash
         run: |
           set -euo pipefail
+
+          # bump package.json version first (no tag)
           npm version "${{ steps.bump.outputs.type }}" --no-git-tag-version
+
+          # refresh lockfile deterministically
           rm -rf node_modules
           npm install --package-lock-only
-          echo "VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
 
-      - name: Compute & validate Docker image repo
+          VERSION="$(node -p "require('./package.json').version")"
+
+          # Ensure tag is unique. If vVERSION exists, bump patch until free.
+          while git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null 2>&1; do
+            echo "Tag v${VERSION} already exists - bumping patch"
+            npm version patch --no-git-tag-version
+            npm install --package-lock-only
+            VERSION="$(node -p "require('./package.json').version")"
+          done
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Compute Docker image repo
         shell: bash
         env:
           DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -euo pipefail
-
           if [ -n "${DOCKERHUB_REPO:-}" ]; then
             REPO="${DOCKERHUB_REPO}"
           else
             REPO="${DOCKERHUB_USERNAME}/sample-nodejs"
           fi
-
           REPO="$(echo "$REPO" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-
-          if ! echo "$REPO" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$'; then
-            echo "Invalid Docker repository name: '$REPO'"
-            echo "Fix secrets: DOCKERHUB_REPO or DOCKERHUB_USERNAME"
-            exit 1
-          fi
-
           echo "IMAGE_REPO=$REPO" >> "$GITHUB_ENV"
           echo "IMAGE_TAG=$REPO:${VERSION}" >> "$GITHUB_ENV"
           echo "IMAGE_LATEST=$REPO:latest" >> "$GITHUB_ENV"
@@ -150,7 +150,6 @@ jobs:
           ignore-unfixed: true
           severity: "HIGH,CRITICAL"
 
-      
       - name: Build & Push image (version + latest)
         uses: docker/build-push-action@v6
         with:
@@ -167,52 +166,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          
+          # Chart.yaml: version + appVersion
           sed -i "s/^version: .*/version: ${VERSION}/" charts/sample-nodejs/Chart.yaml
           sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" charts/sample-nodejs/Chart.yaml
 
-          
+          # values.yaml: image.repository + tag
           sed -i "s|^\(\s*repository:\s*\).*|\1${IMAGE_REPO}|" charts/sample-nodejs/values.yaml
           sed -i "s|^\(\s*tag:\s*\).*|\1${VERSION}|" charts/sample-nodejs/values.yaml
 
-      - name: Commit, tag, push back to branch
+      - name: Commit, tag, push
         shell: bash
         run: |
           set -euo pipefail
 
-          
-          BRANCH="${GITHUB_REF_NAME:-}"
-          if [ -z "${BRANCH}" ] && [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
-            BRANCH="${{ github.event.workflow_run.head_branch }}"
-          fi
-          BRANCH="${BRANCH:-dev}"
+          # Make sure we're on dev branch (not detached) for pushing commit
+          git checkout -B dev
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          
-          git checkout -B "$BRANCH"
-
           git add package.json package-lock.json charts/sample-nodejs/Chart.yaml charts/sample-nodejs/values.yaml
-          git commit -m "chore(release): v${VERSION}" || echo "Nothing to commit."
+          git commit -m "chore(release): v${VERSION}"
 
-          TAG="v${VERSION}"
+          # tag is guaranteed unique by earlier step
+          git tag "v${VERSION}"
 
-          
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists locally - skipping create."
-          elif git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
-            echo "Tag $TAG already exists on origin - skipping create."
-          else
-            git tag "$TAG"
-          fi
-
-          
-          git push origin "$BRANCH"
-
-          
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            git push origin "$TAG" || true
-          fi
+          git push origin dev --tags
 
