@@ -61,12 +61,16 @@ jobs:
       - name: Login to ArgoCD (token)
         shell: bash
         env:
-          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}       
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           echo "Logging into ArgoCD server..."
-          argocd login "${ARGOCD_SERVER}" --insecure --grpc-web --auth-token "${ARGOCD_AUTH_TOKEN}"
+          argocd login "${ARGOCD_SERVER}" \
+            --auth-token "${ARGOCD_AUTH_TOKEN}" \
+            --grpc-web \
+            --insecure \
+            --plaintext
           argocd account get-user-info
 
       - name: Upsert Application (GitOps ArgoCD pulls from this repo)
