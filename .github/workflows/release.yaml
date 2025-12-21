@@ -27,34 +27,57 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout the exact commit that CI validated
+      - name: Resolve target branch/SHA
+        id: ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # manual run: use current ref_name
+            echo "branch=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
+            echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout triggering branch (with push creds)
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ steps.ref.outputs.branch }}
           fetch-depth: 0
+          persist-credentials: true
 
-      - name: Ensure we have all tags
-        run: git fetch --tags --force
+      - name: Ensure branch matches the CI-tested SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ steps.ref.outputs.branch }}" --prune
+          git fetch --tags --force
+          HEAD_SHA="$(git rev-parse HEAD)"
+          EXPECTED="${{ steps.ref.outputs.sha }}"
+          echo "Branch: ${{ steps.ref.outputs.branch }}"
+          echo "HEAD:   $HEAD_SHA"
+          echo "CI SHA: $EXPECTED"
+          if [ "$HEAD_SHA" != "$EXPECTED" ]; then
+            echo "Branch moved after CI finished. Re-run CI on latest commit, then release will follow."
+            exit 1
+          fi
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
 
-      - name: Install
-        run: npm ci
-
-      - name: Tests
-        run: npm test --if-present
-
-      - name: Install Semgrep
+      - name: Install + test
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install semgrep
+          npm ci
+          npm test --if-present
 
       - name: Semgrep gate (fail on ERROR)
         run: |
-          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install semgrep
           semgrep --config p/owasp-top-ten --severity ERROR --error
 
       - name: Decide bump (major/minor/patch)
@@ -81,7 +104,7 @@ jobs:
 
           echo "type=patch" >> "$GITHUB_OUTPUT"
 
-      - name: Compute next VERSION from tags (unique) + set package.json/lock
+      - name: Compute next VERSION from tags (unique) + bump package/lock
         id: version
         shell: bash
         run: |
@@ -139,6 +162,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ -z "${DOCKERHUB_USERNAME:-}" ]; then
+            echo "Missing secret: DOCKERHUB_USERNAME"
+            exit 1
+          fi
+
           if [ -n "${DOCKERHUB_REPO:-}" ]; then
             REPO="${DOCKERHUB_REPO}"
           else
@@ -153,8 +181,8 @@ jobs:
           fi
 
           echo "IMAGE_REPO=$REPO" >> "$GITHUB_ENV"
-          echo "IMAGE_TAG=$REPO:${VERSION}" >> "$GITHUB_ENV"
-          echo "IMAGE_LATEST=$REPO:latest" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=docker.io/$REPO:${VERSION}" >> "$GITHUB_ENV"
+          echo "IMAGE_LATEST=docker.io/$REPO:latest" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -190,8 +218,8 @@ jobs:
           context: .
           push: true
           tags: |
-            docker.io/${{ env.IMAGE_TAG }}
-            docker.io/${{ env.IMAGE_LATEST }}
+            ${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_LATEST }}
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -207,19 +235,10 @@ jobs:
           sed -i "s|^\(\s*repository:\s*\).*|\1${IMAGE_REPO}|" charts/sample-nodejs/values.yaml
           sed -i "s|^\(\s*tag:\s*\).*|\1${VERSION}|" charts/sample-nodejs/values.yaml
 
-      - name: Commit, tag, push (back to the branch that triggered CI)
+      - name: Commit, tag, push
         shell: bash
-        env:
-          TARGET_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
-
-          # For workflow_dispatch fallback, default to current branch
-          if [ -z "${TARGET_BRANCH:-}" ]; then
-            TARGET_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-          fi
-
-          git checkout -B "$TARGET_BRANCH"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -228,5 +247,9 @@ jobs:
           git commit -m "chore(release): v${VERSION}"
 
           git tag "v${VERSION}"
-          git push origin "$TARGET_BRANCH" --tags
+
+          # Rebase in case branch advanced slightly (rare but avoids non-fast-forward)
+          git pull --rebase origin "${{ steps.ref.outputs.branch }}" || true
+
+          git push origin "${{ steps.ref.outputs.branch }}" --tags
 
