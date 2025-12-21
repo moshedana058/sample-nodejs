@@ -16,9 +16,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success')
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: self-hosted
 
     steps:
@@ -63,18 +61,16 @@ jobs:
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
         run: |
           set -euo pipefail
-          # ARGOCD_SERVER should be like: argocd.local:18080  (no http/https)
-          argocd login "$ARGOCD_SERVER" --insecure --grpc-web --auth-token "$ARGOCD_AUTH_TOKEN"
+          echo "Logging into ArgoCD server..."
+          # ARGOCD_SERVER example: argocd.local:18080 (no http/https)
+          argocd login "${ARGOCD_SERVER}" --insecure --grpc-web --auth-token "${ARGOCD_AUTH_TOKEN}"
           argocd account get-user-info
 
       - name: Upsert Application (GitOps: ArgoCD pulls from this repo)
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f argocd/application.yaml ]; then
-            echo "Missing argocd/application.yaml"
-            exit 1
-          fi
+          test -f argocd/application.yaml
           argocd app create -f argocd/application.yaml --upsert
 
       - name: Sync & wait healthy
@@ -82,6 +78,6 @@ jobs:
         run: |
           set -euo pipefail
           APP="sample-nodejs"
-          argocd app sync "$APP" --prune --timeout 300
-          argocd app wait "$APP" --health --timeout 300
+          argocd app sync "${APP}" --prune --timeout 300
+          argocd app wait "${APP}" --health --timeout 300
 
