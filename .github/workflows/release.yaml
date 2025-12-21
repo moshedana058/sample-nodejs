@@ -25,14 +25,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout the exact commit that CI validated
+      - name: Checkout the exact commit CI validated (detached is OK for now)
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
 
-      - name: Fetch tags
-        run: git fetch --tags --force
+      - name: Fetch tags (needed to detect existing versions)
+        run: |
+          git fetch --tags --force
+          git tag -l | tail -n +1 >/dev/null
 
       - uses: actions/setup-node@v4
         with:
@@ -70,35 +72,37 @@ jobs:
           LOG="$(git log --format=%B $RANGE)"
 
           if echo "$LOG" | grep -qi "BREAKING CHANGE"; then
-            echo "type=major" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "type=major" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if echo "$LOG" | grep -qiE '(^feat(\(|:))'; then
-            echo "type=minor" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "type=minor" >> "$GITHUB_OUTPUT"; exit 0
           fi
           echo "type=patch" >> "$GITHUB_OUTPUT"
 
-      - name: Bump npm version + lockfile (ensure unique git tag)
+      - name: Bump npm version + lockfile (ensure tag is unique locally+remote)
         id: version
         shell: bash
         run: |
           set -euo pipefail
 
-          # bump package.json version first (no tag)
-          npm version "${{ steps.bump.outputs.type }}" --no-git-tag-version
+          bump_once () {
+            npm version "$1" --no-git-tag-version
+            rm -rf node_modules
+            npm install --package-lock-only
+          }
 
-          # refresh lockfile deterministically
-          rm -rf node_modules
-          npm install --package-lock-only
-
+          bump_once "${{ steps.bump.outputs.type }}"
           VERSION="$(node -p "require('./package.json').version")"
 
-          # Ensure tag is unique. If vVERSION exists, bump patch until free.
-          while git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null 2>&1; do
-            echo "Tag v${VERSION} already exists - bumping patch"
-            npm version patch --no-git-tag-version
-            npm install --package-lock-only
+          # function to check whether tag exists on remote
+          remote_tag_exists () {
+            git ls-remote --tags origin "refs/tags/v$1" | grep -q .
+          }
+
+          # If vVERSION exists (local or remote), bump patch until free
+          while git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null 2>&1 || remote_tag_exists "${VERSION}"; do
+            echo "Tag v${VERSION} already exists (local or remote) -> bumping patch"
+            bump_once patch
             VERSION="$(node -p "require('./package.json').version")"
           done
 
@@ -166,20 +170,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Chart.yaml: version + appVersion
           sed -i "s/^version: .*/version: ${VERSION}/" charts/sample-nodejs/Chart.yaml
           sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" charts/sample-nodejs/Chart.yaml
-
-          # values.yaml: image.repository + tag
           sed -i "s|^\(\s*repository:\s*\).*|\1${IMAGE_REPO}|" charts/sample-nodejs/values.yaml
           sed -i "s|^\(\s*tag:\s*\).*|\1${VERSION}|" charts/sample-nodejs/values.yaml
 
-      - name: Commit, tag, push
+      - name: Commit, tag, push (attach to dev so not detached)
         shell: bash
         run: |
           set -euo pipefail
 
-          # Make sure we're on dev branch (not detached) for pushing commit
+          # Attach the checked-out SHA to dev branch name (avoids detached HEAD commits)
           git checkout -B dev
 
           git config user.name "github-actions[bot]"
@@ -188,7 +189,7 @@ jobs:
           git add package.json package-lock.json charts/sample-nodejs/Chart.yaml charts/sample-nodejs/values.yaml
           git commit -m "chore(release): v${VERSION}"
 
-          # tag is guaranteed unique by earlier step
+          # Unique tag guaranteed by earlier step
           git tag "v${VERSION}"
 
           git push origin dev --tags
