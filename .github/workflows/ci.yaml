@@ -57,6 +57,7 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install semgrep
 
+      
       - name: Semgrep SAST (generate SARIF + gate)
         run: |
           set -euo pipefail
@@ -83,6 +84,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      
       - name: Build image (local)
         uses: docker/build-push-action@v6
         with:
