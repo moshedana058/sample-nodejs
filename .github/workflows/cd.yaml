@@ -43,36 +43,34 @@ jobs:
             argocd version --client
             exit 0
           fi
+
           ARCH="$(uname -m)"
           case "$ARCH" in
             x86_64) ARCH=amd64 ;;
             aarch64|arm64) ARCH=arm64 ;;
+            *) echo "Unsupported arch: $ARCH"; exit 1 ;;
           esac
+
           curl -sSL -o /tmp/argocd "https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-${ARCH}"
           chmod +x /tmp/argocd
           sudo mv /tmp/argocd /usr/local/bin/argocd
           argocd version --client
 
-      - name: Login to ArgoCD
+      - name: Login to ArgoCD (token)
         shell: bash
         env:
           ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
         run: |
           set -euo pipefail
-          # Uses token-based auth; --grpc-web often needed behind ingress/proxy setups
+          # ARGOCD_SERVER should be like: argocd.local:18080  (no http/https)
           argocd login "$ARGOCD_SERVER" --insecure --grpc-web --auth-token "$ARGOCD_AUTH_TOKEN"
           argocd account get-user-info
 
       - name: Upsert Application (GitOps: ArgoCD pulls from this repo)
         shell: bash
-        env:
-          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
         run: |
           set -euo pipefail
-          # Expecting an app manifest in repo (recommended):
-          # argocd/application.yaml
           if [ ! -f argocd/application.yaml ]; then
             echo "Missing argocd/application.yaml"
             exit 1
@@ -83,11 +81,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP="$(yq -r '.metadata.name' argocd/application.yaml 2>/dev/null || true)"
-          if [ -z "${APP:-}" ] || [ "$APP" = "null" ]; then
-            # fallback if yq isn't installed: hardcode app name in manifest or set APP here
-            APP="sample-nodejs"
-          fi
+          APP="sample-nodejs"
           argocd app sync "$APP" --prune --timeout 300
           argocd app wait "$APP" --health --timeout 300
 
