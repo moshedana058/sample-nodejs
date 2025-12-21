@@ -4,13 +4,14 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+    branches: ["dev", "main"]
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.event.workflow_run.head_sha || github.sha }}
+  group: release-${{ github.event.workflow_run.head_branch || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -19,37 +20,58 @@ jobs:
       (github.event_name == 'workflow_dispatch') ||
       (
         github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.head_branch == 'dev' &&
         !startsWith(github.event.workflow_run.head_commit.message, 'chore(release):')
       )
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout the exact commit that CI validated
+      - name: Resolve target branch/SHA
+        id: ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "branch=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
+            echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout triggering branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ steps.ref.outputs.branch }}
           fetch-depth: 0
+
+      - name: Verify CI-tested SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ steps.ref.outputs.branch }}" --prune
+          git fetch --tags --force
+
+          HEAD_SHA="$(git rev-parse HEAD)"
+          EXPECTED="${{ steps.ref.outputs.sha }}"
+          if [ "$HEAD_SHA" != "$EXPECTED" ]; then
+            echo "Branch moved after CI. Run CI on latest commit; release will follow."
+            exit 1
+          fi
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
 
-      - name: Install
-        run: npm ci
-
-      - name: Tests
-        run: npm test --if-present
-
-      - name: Install Semgrep
+      - name: Install + test
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install semgrep
+          npm ci
+          npm test --if-present
 
       - name: Semgrep gate (fail on ERROR)
         run: |
-          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install semgrep
           semgrep --config p/owasp-top-ten --severity ERROR --error
 
       - name: Decide bump (major/minor/patch)
@@ -57,9 +79,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          git fetch --tags --force
+
+          LAST_TAG="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)"
           if [ -n "${LAST_TAG:-}" ]; then
-            RANGE="$LAST_TAG..HEAD"
+            RANGE="${LAST_TAG}..HEAD"
           else
             RANGE="HEAD"
           fi
@@ -67,25 +91,61 @@ jobs:
           LOG="$(git log --format=%B $RANGE)"
 
           if echo "$LOG" | grep -qi "BREAKING CHANGE"; then
-            echo "type=major" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "type=major" >> "$GITHUB_OUTPUT"; exit 0
           fi
-
           if echo "$LOG" | grep -qiE '(^feat(\(|:))'; then
-            echo "type=minor" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "type=minor" >> "$GITHUB_OUTPUT"; exit 0
           fi
-
           echo "type=patch" >> "$GITHUB_OUTPUT"
 
-      - name: Bump npm version + refresh lockfile
+      - name: Compute next VERSION from remote tags (unique) + bump lockfile
         shell: bash
         run: |
           set -euo pipefail
-          npm version "${{ steps.bump.outputs.type }}" --no-git-tag-version
+          git fetch --tags --force
+
+          latest_tag() {
+            git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true
+          }
+
+          bump_semver() {
+            ver="$1"; t="$2"
+            IFS='.' read -r a b c <<< "$ver"
+            a="${a:-0}"; b="${b:-0}"; c="${c:-0}"
+            case "$t" in
+              major) a=$((a+1)); b=0; c=0 ;;
+              minor) b=$((b+1)); c=0 ;;
+              patch) c=$((c+1)) ;;
+              *) echo "Unknown bump type: $t" >&2; exit 1 ;;
+            esac
+            echo "${a}.${b}.${c}"
+          }
+
+          remote_tag_exists() {
+            git ls-remote --tags origin "refs/tags/v$1" | grep -q .
+          }
+
+          LT="$(latest_tag)"
+          if [ -n "${LT:-}" ]; then
+            BASE="${LT#v}"
+          else
+            BASE="0.0.0"
+          fi
+
+          TYPE="${{ steps.bump.outputs.type }}"
+          VERSION="$(bump_semver "$BASE" "$TYPE")"
+
+          while git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null 2>&1 || remote_tag_exists "${VERSION}"; do
+            echo "Tag v${VERSION} already exists -> bumping patch"
+            VERSION="$(bump_semver "$VERSION" patch)"
+          done
+
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "Chosen VERSION=${VERSION}"
+
+          npm version "${VERSION}" --no-git-tag-version
           rm -rf node_modules
           npm install --package-lock-only
-          echo "VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
 
       - name: Compute Docker image repo
         shell: bash
@@ -94,6 +154,10 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -euo pipefail
+          if [ -z "${DOCKERHUB_USERNAME:-}" ]; then
+            echo "Missing secret: DOCKERHUB_USERNAME"
+            exit 1
+          fi
 
           if [ -n "${DOCKERHUB_REPO:-}" ]; then
             REPO="${DOCKERHUB_REPO}"
@@ -102,15 +166,9 @@ jobs:
           fi
 
           REPO="$(echo "$REPO" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-
-          if ! echo "$REPO" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$'; then
-            echo "Invalid Docker repository name: '$REPO'"
-            exit 1
-          fi
-
           echo "IMAGE_REPO=$REPO" >> "$GITHUB_ENV"
-          echo "IMAGE_TAG=$REPO:${VERSION}" >> "$GITHUB_ENV"
-          echo "IMAGE_LATEST=$REPO:dev-latest" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=docker.io/$REPO:${VERSION}" >> "$GITHUB_ENV"
+          echo "IMAGE_LATEST=docker.io/$REPO:latest" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -138,30 +196,26 @@ jobs:
           ignore-unfixed: true
           severity: "HIGH,CRITICAL"
 
-      - name: Build & Push image (version + dev-latest)
+      - name: Build & Push image (version + latest)
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            docker.io/${{ env.IMAGE_TAG }}
-            docker.io/${{ env.IMAGE_LATEST }}
+            ${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_LATEST }}
           provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Update Helm chart versions + image repo/tag
         shell: bash
         run: |
           set -euo pipefail
-
           sed -i "s/^version: .*/version: ${VERSION}/" charts/sample-nodejs/Chart.yaml
           sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" charts/sample-nodejs/Chart.yaml
-
-          sed -i "s|^\(\s*repository:\s*\).*|\1docker.io/${IMAGE_REPO}|" charts/sample-nodejs/values.yaml
+          sed -i "s|^\(\s*repository:\s*\).*|\1${IMAGE_REPO}|" charts/sample-nodejs/values.yaml
           sed -i "s|^\(\s*tag:\s*\).*|\1${VERSION}|" charts/sample-nodejs/values.yaml
 
-      - name: Commit, tag, push back to dev
+      - name: Commit, tag, push
         shell: bash
         run: |
           set -euo pipefail
@@ -170,7 +224,8 @@ jobs:
 
           git add package.json package-lock.json charts/sample-nodejs/Chart.yaml charts/sample-nodejs/values.yaml
           git commit -m "chore(release): v${VERSION}"
+
           git tag "v${VERSION}"
 
-          git push origin HEAD:dev --tags
+          git push origin "${{ steps.ref.outputs.branch }}" --tags
 
