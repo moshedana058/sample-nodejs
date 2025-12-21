@@ -1,35 +1,44 @@
 name: Release
 
 on:
+  
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+    branches: ["dev"]
+
+  
   workflow_dispatch: {}
 
 permissions:
   contents: write
+  security-events: write
 
 concurrency:
-  group: release-${{ github.event.workflow_run.head_sha || github.sha }}
+  group: release-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
 jobs:
   release:
+    
     if: >
       (github.event_name == 'workflow_dispatch') ||
       (
         github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.head_branch == 'dev' &&
         !startsWith(github.event.workflow_run.head_commit.message, 'chore(release):')
       )
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout the exact commit that CI validated
+      
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --force --tags
 
       - uses: actions/setup-node@v4
         with:
@@ -87,7 +96,7 @@ jobs:
           npm install --package-lock-only
           echo "VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
 
-      - name: Compute Docker image repo
+      - name: Compute & validate Docker image repo
         shell: bash
         env:
           DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
@@ -105,12 +114,13 @@ jobs:
 
           if ! echo "$REPO" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$'; then
             echo "Invalid Docker repository name: '$REPO'"
+            echo "Fix secrets: DOCKERHUB_REPO or DOCKERHUB_USERNAME"
             exit 1
           fi
 
           echo "IMAGE_REPO=$REPO" >> "$GITHUB_ENV"
           echo "IMAGE_TAG=$REPO:${VERSION}" >> "$GITHUB_ENV"
-          echo "IMAGE_LATEST=$REPO:dev-latest" >> "$GITHUB_ENV"
+          echo "IMAGE_LATEST=$REPO:latest" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -128,6 +138,8 @@ jobs:
           load: true
           tags: ${{ env.IMAGE_TAG }}
           provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Trivy scan (fail on HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@0.28.0
@@ -138,14 +150,15 @@ jobs:
           ignore-unfixed: true
           severity: "HIGH,CRITICAL"
 
-      - name: Build & Push image (version + dev-latest)
+      
+      - name: Build & Push image (version + latest)
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            docker.io/${{ env.IMAGE_TAG }}
-            docker.io/${{ env.IMAGE_LATEST }}
+            ${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_LATEST }}
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -155,22 +168,51 @@ jobs:
         run: |
           set -euo pipefail
 
+          
           sed -i "s/^version: .*/version: ${VERSION}/" charts/sample-nodejs/Chart.yaml
           sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" charts/sample-nodejs/Chart.yaml
 
-          sed -i "s|^\(\s*repository:\s*\).*|\1docker.io/${IMAGE_REPO}|" charts/sample-nodejs/values.yaml
+          
+          sed -i "s|^\(\s*repository:\s*\).*|\1${IMAGE_REPO}|" charts/sample-nodejs/values.yaml
           sed -i "s|^\(\s*tag:\s*\).*|\1${VERSION}|" charts/sample-nodejs/values.yaml
 
-      - name: Commit, tag, push back to dev
+      - name: Commit, tag, push back to branch
         shell: bash
         run: |
           set -euo pipefail
+
+          
+          BRANCH="${GITHUB_REF_NAME:-}"
+          if [ -z "${BRANCH}" ] && [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
+            BRANCH="${{ github.event.workflow_run.head_branch }}"
+          fi
+          BRANCH="${BRANCH:-dev}"
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add package.json package-lock.json charts/sample-nodejs/Chart.yaml charts/sample-nodejs/values.yaml
-          git commit -m "chore(release): v${VERSION}"
-          git tag "v${VERSION}"
+          
+          git checkout -B "$BRANCH"
 
-          git push origin HEAD:dev --tags
+          git add package.json package-lock.json charts/sample-nodejs/Chart.yaml charts/sample-nodejs/values.yaml
+          git commit -m "chore(release): v${VERSION}" || echo "Nothing to commit."
+
+          TAG="v${VERSION}"
+
+          
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists locally - skipping create."
+          elif git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
+            echo "Tag $TAG already exists on origin - skipping create."
+          else
+            git tag "$TAG"
+          fi
+
+          
+          git push origin "$BRANCH"
+
+          
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            git push origin "$TAG" || true
+          fi
 
