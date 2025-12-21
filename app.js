@@ -1,50 +1,37 @@
-const express = require('express');
-const promClient = require('prom-client');
+const express = require("express");
+const client = require("prom-client");
 
 const app = express();
-const port = process.env.PORT || 8080;
 
-// Create a Registry to register the metrics
-const register = new promClient.Registry();
+const PORT = Number(process.env.PORT || 8080);
 
-// Enable the collection of default metrics
-promClient.collectDefaultMetrics({ register });
+let BASE_PATH = (process.env.BASE_PATH || "/moshe-dana-app").trim();
+if (!BASE_PATH.startsWith("/")) BASE_PATH = "/" + BASE_PATH;
+BASE_PATH = BASE_PATH.replace(/\/+$/, "");
+if (BASE_PATH === "") BASE_PATH = "/";
 
-const helloWorldCounter = new promClient.Counter({
-    name: 'root_access_total',
-    help: 'Total number of accesses to the root path',
-});
-register.registerMetric(helloWorldCounter);
+const GREETING = (process.env.APP_GREETING || "Hello, World!").trim() || "Hello, World!";
 
+const register = new client.Registry();
+client.collectDefaultMetrics({ register });
 
-
-// Define routes
-app.get('/my-app', (req, res) => {
-    helloWorldCounter.inc();
-    res.send('Hello, World!');
-});
-
-app.get('/about', (req, res) => {
-    res.send('This is a sample Node.js application for Kubernetes deployment testing.');
+app.get("/", (_req, res) => res.status(200).send(GREETING));
+app.get("/ready", (_req, res) => res.status(200).send("Ready"));
+app.get("/live", (_req, res) => res.status(200).send("Alive"));
+app.get("/metrics", async (_req, res) => {
+  res.set("Content-Type", register.contentType);
+  res.end(await register.metrics());
 });
 
-app.get('/ready', (req, res) => {
-    res.status(200).send('Ready');
+app.get(BASE_PATH, (_req, res) => res.status(200).send(GREETING));
+app.get(`${BASE_PATH}/`, (_req, res) => res.status(200).send(GREETING));
+app.get(`${BASE_PATH}/ready`, (_req, res) => res.status(200).send("Ready"));
+app.get(`${BASE_PATH}/live`, (_req, res) => res.status(200).send("Alive"));
+app.get(`${BASE_PATH}/metrics`, async (_req, res) => {
+  res.set("Content-Type", register.contentType);
+  res.end(await register.metrics());
 });
 
-app.get('/live', (req, res) => {
-    res.status(200).send('Alive');
-});
-
-app.get('/classified', (req, res) => {
-    res.status(200).send('You should not be here!!!');
-});
-
-app.get('/metrics', async (req, res) => {
-    res.set('Content-Type', register.contentType);
-    res.end(await register.metrics());
-});
-
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
+app.listen(PORT, () => {
+  console.log(`Listening on :${PORT} (BASE_PATH=${BASE_PATH})`);
 });

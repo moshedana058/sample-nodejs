@@ -1,0 +1,13 @@
+1) Add host entry:
+   127.0.0.1 {{ .Values.ingress.host }}
+
+2) Browse:
+   http://{{ .Values.ingress.host }}:{{ .Values.local.hostPort }}{{ .Values.ingress.path }}
+
+3) Health:
+   http://{{ .Values.ingress.host }}:{{ .Values.local.hostPort }}/ready
+   http://{{ .Values.ingress.host }}:{{ .Values.local.hostPort }}/live
+
+4) Metrics:
+   http://{{ .Values.ingress.host }}:{{ .Values.local.hostPort }}/metrics
+   http://{{ .Values.ingress.host }}:{{ .Values.local.hostPort }}{{ .Values.ingress.path }}/metrics

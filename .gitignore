@@ -1,1 +1,11 @@
 node_modules/
+
+# accidental Windows-path files created from WSL
+C:WindowsSystem32driversetchosts
+C:\Windows\System32\drivers\etc\hosts
+
+# WSL/Windows path accidents
+C:Windows*
+
+# local cluster config (optional)
+kind-config.yaml

@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    if: >
+      (github.event_name == 'workflow_dispatch') ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'dev' &&
+        !startsWith(github.event.workflow_run.head_commit.message, 'chore(release):')
+      )
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout the exact commit that CI validated
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install
+        run: npm ci
+
+      - name: Tests
+        run: npm test --if-present
+
+      - name: Install Semgrep
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install semgrep
+
+      - name: Semgrep gate (fail on ERROR)
+        run: |
+          set -euo pipefail
+          semgrep --config p/owasp-top-ten --severity ERROR --error
+
+      - name: Decide bump (major/minor/patch)
+        id: bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -n "${LAST_TAG:-}" ]; then
+            RANGE="$LAST_TAG..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+
+          LOG="$(git log --format=%B $RANGE)"
+
+          if echo "$LOG" | grep -qi "BREAKING CHANGE"; then
+            echo "type=major" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if echo "$LOG" | grep -qiE '(^feat(\(|:))'; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "type=patch" >> "$GITHUB_OUTPUT"
+
+      - name: Bump npm version + refresh lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm version "${{ steps.bump.outputs.type }}" --no-git-tag-version
+          rm -rf node_modules
+          npm install --package-lock-only
+          echo "VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+
+      - name: Compute Docker image repo
+        shell: bash
+        env:
+          DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${DOCKERHUB_REPO:-}" ]; then
+            REPO="${DOCKERHUB_REPO}"
+          else
+            REPO="${DOCKERHUB_USERNAME}/sample-nodejs"
+          fi
+
+          REPO="$(echo "$REPO" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+
+          if ! echo "$REPO" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$'; then
+            echo "Invalid Docker repository name: '$REPO'"
+            exit 1
+          fi
+
+          echo "IMAGE_REPO=$REPO" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=$REPO:${VERSION}" >> "$GITHUB_ENV"
+          echo "IMAGE_LATEST=$REPO:dev-latest" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image (local for scan)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE_TAG }}
+          provenance: false
+
+      - name: Trivy scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE_TAG }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: "HIGH,CRITICAL"
+
+      - name: Build & Push image (version + dev-latest)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            docker.io/${{ env.IMAGE_TAG }}
+            docker.io/${{ env.IMAGE_LATEST }}
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update Helm chart versions + image repo/tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sed -i "s/^version: .*/version: ${VERSION}/" charts/sample-nodejs/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" charts/sample-nodejs/Chart.yaml
+
+          sed -i "s|^\(\s*repository:\s*\).*|\1docker.io/${IMAGE_REPO}|" charts/sample-nodejs/values.yaml
+          sed -i "s|^\(\s*tag:\s*\).*|\1${VERSION}|" charts/sample-nodejs/values.yaml
+
+      - name: Commit, tag, push back to dev
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add package.json package-lock.json charts/sample-nodejs/Chart.yaml charts/sample-nodejs/values.yaml
+          git commit -m "chore(release): v${VERSION}"
+          git tag "v${VERSION}"
+
+          git push origin HEAD:dev --tags
+

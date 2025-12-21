@@ -1,0 +1,71 @@
+replicaCount: 2
+
+image:
+  repository: sample-nodejs
+  tag: local
+  pullPolicy: IfNotPresent
+
+app:
+  basePath: /moshe-dana-app
+  port: 8080
+
+config:
+  appGreeting: Hello, World!
+
+local:
+  hostPort: 18080
+
+serviceAccount:
+  create: true
+  automountToken: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  host: moshe-dana-app.local
+  path: /moshe-dana-app
+  extraPaths:
+    - /ready
+    - /live
+    - /metrics
+  annotations: {}
+
+probes:
+  readiness:
+    path: /ready
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+  liveness:
+    path: /live
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
