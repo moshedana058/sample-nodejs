@@ -81,17 +81,8 @@ A complete DevOps/DevSecOps challenge solution showing:
 ---
 ## Screenshots
 
-![App Screenshot](https://raw.githubusercontent.com/moshedana058/sample-nodejs/dev/screenshots/app.png)
+![App Screenshot] (screenshots/app.png)
 
-![ArgoCD](https://raw.githubusercontent.com/moshedana058/sample-nodejs/dev/screenshots/argocd.png)
-
-![Live Probe](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/live_probe.png)
-
-![Metrics](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/metrics.png)
-
-![Ready Probe](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/ready_probe.png)
-
-![Scan](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/scan.png)
 
 
 
