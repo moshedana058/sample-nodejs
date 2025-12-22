@@ -77,9 +77,18 @@ A complete DevOps/DevSecOps challenge solution showing:
    ├─ release.yaml
    └─ cd.yaml
 
-<img width="1919" height="972" alt="image" src="https://github.com/user-attachments/assets/d0afc313-525e-4771-ab96-1c323f36af59" />
+---
 
-<img width="1601" height="936" alt="image" src="https://github.com/user-attachments/assets/74c66fb0-c1c2-4842-bd07-a51874cf7420" />
+## POC evidence (Screenshots)
+
+
+
+### ✅ ArgoCD – Application status
+<img width="1601" height="936" alt="ArgoCD application status" src="https://github.com/user-attachments/assets/74c66fb0-c1c2-4842-bd07-a51874cf7420" />
+
+---
+
+
 
 
 
