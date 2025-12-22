@@ -81,23 +81,18 @@ A complete DevOps/DevSecOps challenge solution showing:
 ---
 ## Screenshots
 
-### Application Interface
-![App Screenshot](screenshots/app.png)
+![App Screenshot](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/app.png)
 
-### ArgoCD Integration
-![ArgoCD](screenshots/argocd.png)
+![ArgoCD](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/argocd.png)
 
-### Live Probe
-![Live Probe](screenshots/live_probe.png)
+![Live Probe](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/live_probe.png)
 
-### Metrics Dashboard
-![Metrics](screenshots/metrics.png)
+![Metrics](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/metrics.png)
 
-### Ready Probe
-![Ready Probe](screenshots/ready_probe.png)
+![Ready Probe](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/ready_probe.png)
 
-### Scanning
-![Scan](screenshots/scan.png)
+![Scan](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/scan.png)
+
 
 
 
