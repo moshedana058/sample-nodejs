@@ -72,7 +72,8 @@ A complete DevOps/DevSecOps challenge solution showing:
 │        └─ serviceaccount.yaml
 ├─ argocd/
 │  └─ application.yaml
-└─ .github/workflows/
+
+
    ├─ ci.yaml
    ├─ release.yaml
    └─ cd.yaml
@@ -82,11 +83,13 @@ A complete DevOps/DevSecOps challenge solution showing:
 ## POC evidence (Screenshots)
 
 
+<img width="1919" height="972" alt="image (1)" src="https://github.com/user-attachments/assets/1ec54b9f-3c55-4875-9920-d67b2bcb1315" />
 
-### ✅ ArgoCD – Application status
-<img width="1601" height="936" alt="ArgoCD application status" src="https://github.com/user-attachments/assets/74c66fb0-c1c2-4842-bd07-a51874cf7420" />
 
----
+<img width="1601" height="936" alt="image" src="https://github.com/user-attachments/assets/f55d253e-c164-4c51-9d8e-63d4ee6d36eb" />
+
+
+
 
 
 
