@@ -81,9 +81,9 @@ A complete DevOps/DevSecOps challenge solution showing:
 ---
 ## Screenshots
 
-![App Screenshot](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/app.png)
+![App Screenshot](https://raw.githubusercontent.com/moshedana058/sample-nodejs/dev/screenshots/app.png)
 
-![ArgoCD](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/argocd.png)
+![ArgoCD](https://raw.githubusercontent.com/moshedana058/sample-nodejs/dev/screenshots/argocd.png)
 
 ![Live Probe](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/live_probe.png)
 
@@ -92,6 +92,7 @@ A complete DevOps/DevSecOps challenge solution showing:
 ![Ready Probe](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/ready_probe.png)
 
 ![Scan](https://raw.githubusercontent.com/moshedana058/sample-nodejs/main/screenshots/scan.png)
+
 
 
 
