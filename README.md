@@ -72,16 +72,31 @@ A complete DevOps/DevSecOps challenge solution showing:
 │        └─ serviceaccount.yaml
 ├─ argocd/
 │  └─ application.yaml
-
-
    ├─ ci.yaml
    ├─ release.yaml
    └─ cd.yaml
-```text
+```
 ---
-## Screenshots
+## POC Screenshots
 
-![App Screenshot] (screenshots/app.png)
+### Application Interface
+![App Screenshot](screenshots/app.png)
+
+### ArgoCD Integration
+![ArgoCD](screenshots/argocd.png)
+
+### Live Probe
+![Live Probe](screenshots/live_probe.png)
+
+### Metrics Dashboard
+![Metrics](screenshots/metrics.png)
+
+### Ready Probe
+![Ready Probe](screenshots/ready_probe.png)
+
+### Scanning
+![Scan](screenshots/scan.png)
+
 
 
 
