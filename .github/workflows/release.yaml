@@ -28,7 +28,6 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      
       DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
@@ -62,7 +61,6 @@ jobs:
             echo "Branch head moved since CI ran."
             echo "Branch HEAD: $HEAD_SHA"
             echo "CI head_sha:  ${{ steps.ref.outputs.sha }}"
-            echo "Exiting to avoid releasing unvalidated commit."
             exit 1
           fi
 
@@ -210,12 +208,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          
           sed -i "s/^version: .*/version: ${VERSION}/" charts/sample-nodejs/Chart.yaml
           sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" charts/sample-nodejs/Chart.yaml
-
-          
           sed -i "s|^\(\s*repository:\s*\).*|\1${IMAGE_REPO}|" charts/sample-nodejs/values.yaml
           sed -i "s|^\(\s*tag:\s*\).*|\1${IMAGE_TAG##*:}|" charts/sample-nodejs/values.yaml
 
@@ -225,20 +219,20 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           git add package.json package-lock.json charts/sample-nodejs/Chart.yaml charts/sample-nodejs/values.yaml
           git commit -m "chore(release): v${VERSION}" || echo "No changes to commit"
 
-      - name: Create a tag on main only (safe)
+      - name: Create a tag on main only (collision-safe)
         if: ${{ steps.ref.outputs.branch == 'main' }}
+        id: tag
         shell: bash
         run: |
           set -euo pipefail
           git fetch --tags --force
 
-          
           BASE="${VERSION}"
           TAG="v${BASE}"
+
           while git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; do
             IFS='.' read -r MA MI PA <<< "${BASE}"
             PA=$((PA + 1))
@@ -246,21 +240,21 @@ jobs:
             TAG="v${BASE}"
           done
 
-          
+        
           if [ "${BASE}" != "${VERSION}" ]; then
-            echo "Tag existed. Bumping to ${BASE}"
+            echo "Tag existed. Bumping version to ${BASE}"
             npm version "${BASE}" --no-git-tag-version
             rm -rf node_modules
             npm install --package-lock-only
             sed -i "s/^version: .*/version: ${BASE}/" charts/sample-nodejs/Chart.yaml
             sed -i "s/^appVersion: .*/appVersion: \"${BASE}\"/" charts/sample-nodejs/Chart.yaml
-
             git add package.json package-lock.json charts/sample-nodejs/Chart.yaml
             git commit -m "chore(release): v${BASE}" || true
             echo "VERSION=${BASE}" >> "$GITHUB_ENV"
           fi
 
-          git tag "v${VERSION}"
+          git tag "${TAG}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Push branch (+ tags if main)
         shell: bash

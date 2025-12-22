@@ -8,7 +8,7 @@ FROM node:21-alpine
 WORKDIR /app
 
 RUN apk update && apk upgrade --no-cache
-
+#test comment
 RUN rm -rf /usr/local/lib/node_modules/npm \
     /usr/local/bin/npm /usr/local/bin/npx || true
 

@@ -15,6 +15,7 @@ A lightweight Node.js application. It features basic web endpoints, Prometheus m
 
 - Node.js (v22.1.0)
 - KinD
+- local runner
 
 # <div align="center">
 
