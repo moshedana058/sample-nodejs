@@ -77,11 +77,12 @@ A complete DevOps/DevSecOps challenge solution showing:
    ├─ ci.yaml
    ├─ release.yaml
    └─ cd.yaml
-
+```text
 ---
 ## Screenshots
 
 ![App Screenshot] (screenshots/app.png)
+
 
 
 
