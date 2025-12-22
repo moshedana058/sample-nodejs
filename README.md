@@ -80,13 +80,9 @@ A complete DevOps/DevSecOps challenge solution showing:
 
 ---
 
-## POC evidence (Screenshots)
 
 
-<img width="1919" height="972" alt="image (1)" src="https://github.com/user-attachments/assets/1ec54b9f-3c55-4875-9920-d67b2bcb1315" />
 
-
-<img width="1601" height="936" alt="image" src="https://github.com/user-attachments/assets/f55d253e-c164-4c51-9d8e-63d4ee6d36eb" />
 
 
 
