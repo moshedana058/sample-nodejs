@@ -79,7 +79,7 @@ jobs:
           argocd --server "${ARGOCD_SERVER}" --grpc-web --plaintext \
             --auth-token "${ARGOCD_AUTH_TOKEN}" account get-user-info
 
-      - name: Upsert Application (GitOps: ArgoCD pulls from this repo)
+      - name: Upsert Application (GitOps:ArgoCD pulls from this repo)
         shell: bash
         env:
           ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
